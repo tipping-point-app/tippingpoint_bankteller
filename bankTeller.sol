@@ -2,233 +2,380 @@
 pragma solidity ^0.8.0;
 
 contract BankTeller {
-    IERC20 public USDCcoin;
+    IERC20 public usdc;
     bytes32 public DOMAIN_SEPARATOR;
+    address immutable owner;
+
     modifier onlyOwner() {
         require(msg.sender == owner, "Caller is not the owner");
         _;
     }
-    address immutable owner;
-    mapping(bytes32 => bool) public signatureExecuted;
-    mapping(bytes32 => bool) public approvalFeeTransferred;
 
-    constructor(address _owner, address usdcCoin) {
-        USDCcoin = IERC20(usdcCoin);
+    constructor(address _owner, address usdcCoin, uint chainId) {
+        usdc = IERC20(usdcCoin);
         owner = _owner;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
                 ),
-                keccak256(bytes("TippingPoint Transfer Contract")), // Name of the dApp
-                keccak256(bytes("1")), // Version
-                84532, // Replace with actual chainId
+                keccak256(bytes("TippingPoint Bank Teller Contract")), // Name of the dApp. Should this be a constructor param?
+                keccak256(bytes("1")), // Version. Should this be a constructor param?
+                chainId, // Replace with actual chainId (Base Sepolia: 84532)
                 address(this)
             )
         );
     }
 
     struct DestinationApproval {
-        address from;
-        address to;
-        uint256 amount;
-        string eventId;
-        uint256 approvalFee; //TODO: MOOSE: set to $1 if approval fee can be collected
+        address from; //invitee address
+        address to; // creator address
+        uint256 optInAmount; // amount donated to event
+        uint256 tippingPointFee; // amount sent to tipping point as a collection fee
+        string eventId; //event identifiter
+        uint256 approvalFee; // fee for Tipping Point cover USDC allowance/permission call that TP will execute before the transfer of funds
+        uint256 approvalFeeNonce; //nonce to prevent double spend when pulling their approval fee
     }
 
     function getDomainSeparator() public view returns (bytes32) {
         return DOMAIN_SEPARATOR;
     }
 
-    function hashMessage(
-        DestinationApproval memory message
+    function _hashDestinationApprovalMessage(
+        DestinationApproval calldata message
     ) internal pure returns (bytes32) {
         return
             keccak256(
                 abi.encode(
                     keccak256(
-                        "DestinationApproval(address from,address to,uint256 amount,string eventId,uint256 approvalFee)"
+                        "DestinationApproval(address from,address to,uint256 optInAmount,uint256 tippingPointFee,string eventId,uint256 approvalFee)"
                     ),
                     message.from,
                     message.to,
-                    message.amount,
+                    message.optInAmount,
+                    message.tippingPointFee,
                     keccak256(bytes(message.eventId)),
                     message.approvalFee
                 )
             );
     }
 
-    // TODO: We wanna batch multiple of these calls together, but we'll want to check their allowances before
-    // calling the batch since it costs gas.
-    function verifyAndTransfer(
-        DestinationApproval memory message,
+    function _hashRefundApprovalMessage(
+        RefundApproval calldata message
+    ) internal pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    keccak256(
+                        "RefundApproval(address creator,uint256 totalRaisedToRefund,string eventId,address[] invitees,uint256[] amounts,uint256 refundNonce)"
+                    ),
+                    message.creator,
+                    message.totalRaisedToRefund,
+                    keccak256(bytes(message.eventId)),
+                    keccak256(abi.encodePacked(message.invitees)),
+                    keccak256(abi.encodePacked(message.amounts)),
+                    message.refundNonce
+                )
+            );
+    }
+
+    function _hashRefundableDepositMessage(
+        RefundableDeposit calldata message
+    ) internal pure returns (bytes32) {
+        return
+            keccak256(
+                abi.encode(
+                    keccak256(
+                        "RefundableDeposit(address invitee,address creator,uint256 iouDepositAmount,string eventId)"
+                    ),
+                    message.invitee,
+                    message.creator,
+                    message.iouDepositAmount,
+                    keccak256(bytes(message.eventId))
+                )
+            );
+    }
+
+    mapping(bytes32 => bool) public transferSignatureExecuted;
+
+    function transferInviteeFunds(
+        DestinationApproval calldata destinationApproval,
         uint8 v,
         bytes32 r,
         bytes32 s
     ) external onlyOwner {
         // Create a unique hash for this transaction using the sender's address and the event ID
-        bytes32 txHash = keccak256(
-            abi.encodePacked(message.from, message.eventId)
+        bytes32 inviteeEventIdHash = keccak256(
+            abi.encodePacked(
+                destinationApproval.from,
+                destinationApproval.eventId
+            )
         );
-        // Check if this transaction has already been executed
-        require(!signatureExecuted[txHash], "Transaction already executed");
-
-        bytes32 hash = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, hashMessage(message))
-        );
-        address recoveredAddress = ecrecover(hash, v, r, s);
+        // Check if this transaction has already been executed to prevent double spend/transfer
         require(
-            recoveredAddress == message.from,
-            "From address must sign the transaction"
+            !transferSignatureExecuted[inviteeEventIdHash],
+            "Transaction already executed"
         );
 
-        emit SignatureVerified(
-            message.from,
-            message.to,
-            message.amount,
-            message.eventId
+        bytes32 hashedDestinationApproval = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR,
+                _hashDestinationApprovalMessage(destinationApproval)
+            )
+        );
+        address recoveredAddress = ecrecover(
+            hashedDestinationApproval,
+            v,
+            r,
+            s
+        );
+        require(
+            recoveredAddress == destinationApproval.from,
+            "The 'from' address(invitee) must sign the DestinationApproval message"
         );
 
-        // Placeholder for the logic to transfer USDC tokens from `message.from` to `message.to`
-        bool success = USDCcoin.transferFrom(
-            message.from,
-            message.to,
-            message.amount
-        );
-        if (!success) {
-            emit ErrorOccurred(
-                message.from,
-                message.eventId,
-                "Error occurred after USDC transferFrom"
-            );
-        }
-        require(success, "USDC transfer failed");
+        // Following Check-Effects-Interaction (require calls first, then update state/mapping, then transfer funds)
+        transferSignatureExecuted[inviteeEventIdHash] = true;
 
-        signatureExecuted[txHash] = true;
-        emit TransactionExecuted(
-            message.from,
-            message.to,
-            message.amount,
-            message.eventId,
-            success
+        //send funds from invitee to creator
+        bool optInTransferSuccess = usdc.transferFrom(
+            destinationApproval.from,
+            destinationApproval.to,
+            destinationApproval.optInAmount
+        );
+
+        require(optInTransferSuccess, "USDC transfer to creator failed");
+
+        // send the Tipping Point fee to Tipping Point address/owner
+        bool tippingPointFeeTransferSuccess = usdc.transferFrom(
+            destinationApproval.from,
+            owner,
+            destinationApproval.tippingPointFee
+        );
+        require(
+            tippingPointFeeTransferSuccess,
+            "USDC fee transfer to Tipping Point failed"
+        );
+        emit InviteeFundsTransferred(
+            destinationApproval.eventId,
+            destinationApproval.from,
+            destinationApproval.to,
+            destinationApproval.optInAmount,
+            destinationApproval.tippingPointFee
         );
     }
 
-    // more efficient gas wise to just send the token to the owner address.
-    function verifyAndWithdrawApprovalFee(
-        DestinationApproval memory message,
+    /**
+     * The purpose of this function is to collect a fee as compensation for executing the permission call to the USDC contract on behalf of the invitee,
+     * so that the BankTeller smart contract would have a USDC allowance to transfer on their behalf for tipped events. This may be called before or after
+     * executing the permission/"permit" call for the invitee. The permit call is a gasless way of executing contract calls on behalf of an EOA (in this case being the invitee).
+     */
+    mapping(address => uint256) public approvalFeeNonces;
+
+    function withdrawAllowanceFee(
+        DestinationApproval calldata destinationApproval,
         uint8 v,
         bytes32 r,
         bytes32 s
     ) external onlyOwner {
-        uint256 ONE_USDC = 1_000_000;
-        require(message.approvalFee == ONE_USDC, "Fee must be 1 USDC token");
-        // Create a unique hash for this transaction using the sender's address and the event ID
-        bytes32 txHash = keccak256(
-            abi.encodePacked(message.from, message.eventId)
+        bytes32 hashedDestinationApproval = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR,
+                _hashDestinationApprovalMessage(destinationApproval)
+            )
         );
-        // Check if this transaction has already been executed
+        address recoveredAddress = ecrecover(
+            hashedDestinationApproval,
+            v,
+            r,
+            s
+        );
         require(
-            !approvalFeeTransferred[txHash],
-            "Approval Fee already paid out"
-        );
-
-        bytes32 hash = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, hashMessage(message))
-        );
-        address recoveredAddress = ecrecover(hash, v, r, s);
-        require(
-            recoveredAddress == message.from,
+            recoveredAddress == destinationApproval.from,
             "From address must sign the transaction"
         );
-        emit SignatureVerified(
-            message.from,
-            message.to,
-            message.amount,
-            message.eventId
+        require(
+            approvalFeeNonces[recoveredAddress] ==
+                destinationApproval.approvalFeeNonce,
+            "Invalid nonce"
         );
 
-        bool success = USDCcoin.transferFrom(
-            message.from,
+        approvalFeeNonces[recoveredAddress]++; //mark nonce as used
+        bool success = usdc.transferFrom(
+            destinationApproval.from,
             owner,
-            message.approvalFee
+            destinationApproval.approvalFee
         );
         require(success, "approval fee transfer failed");
-        approvalFeeTransferred[txHash] = true; //prevent replays of approvalFee transfer
+
+        emit AllowanceFeeTransferred(
+            destinationApproval.from,
+            destinationApproval.eventId,
+            destinationApproval.approvalFee
+        );
+    }
+
+    struct RefundApproval {
+        address creator;
+        uint totalRaisedToRefund;
+        string eventId;
+        address[] invitees;
+        uint256[] amounts;
+        uint refundNonce;
+    }
+    mapping(address => uint256) public refundNonces;
+
+    /**
+     * The purpose of this function is for an event-creatot to refunds all the funds collected from invitees for a successfully tipped event,
+     * for whatever reason. This requires they seign an eip-712 message in the form of the RefundApproval struct to confirm the invitees and amounts
+     * to return. The creator should also execute this call, and thus cover the gas fees.
+     */
+    function refundEventFunds(
+        RefundApproval calldata refundApproval,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external {
+        //require the call to be initiated by creator msg.sender
+        require(
+            msg.sender == refundApproval.creator,
+            "Creator address must call the function"
+        );
+        // prevent double submission/refunding by creator, perhaps by accident.
+        require(
+            refundNonces[refundApproval.creator] == refundApproval.refundNonce,
+            "invalid nonce"
+        );
+
+        bytes32 hashedDestinationApproval = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR,
+                _hashRefundApprovalMessage(refundApproval)
+            )
+        );
+        address recoveredAddress = ecrecover(
+            hashedDestinationApproval,
+            v,
+            r,
+            s
+        );
+        // Is this require for ecrecover overkill? Maybe good enough to just check msg.sender?
+        require(
+            recoveredAddress == refundApproval.creator,
+            "The 'creator' address must sign the RefundApproval message"
+        );
+        uint256 totalRefunded = 0;
+        for (uint256 i = 0; i < refundApproval.invitees.length; i++) {
+            bool success = usdc.transferFrom(
+                refundApproval.creator,
+                refundApproval.invitees[i],
+                refundApproval.amounts[i]
+            );
+            require(success, "approval fee transfer failed");
+            totalRefunded += refundApproval.amounts[i];
+        }
+        refundNonces[recoveredAddress]++; //mark nonce as used
+
+        emit RefundEventFundsTransferred(
+            refundApproval.eventId,
+            refundApproval.creator,
+            totalRefunded,
+            refundApproval.invitees.length
+        );
+    }
+
+    struct RefundableDeposit {
+        address invitee;
+        address creator;
+        uint iouDepositAmount;
+        string eventId;
+    }
+    /**
+     * The purpose of this function is for a creator of a Refundable Deposit event to be able to collect the IOU-deposit promises from
+     * invitees. The invitees will approve the IOU-Deposits by signing eip-712 messages in the form of a RefundableDeposit struct
+     */
+    mapping(bytes32 => bool) public refundableDepositExecuted;
+
+    function collectRefundableDeposit(
+        RefundableDeposit calldata refundableDeposit,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external onlyOwner {
+        // confirm the invitee signed the RefundableDeposit
+        bytes32 hashedRefundableDeposit = keccak256(
+            abi.encodePacked(
+                "\x19\x01",
+                DOMAIN_SEPARATOR,
+                _hashRefundableDepositMessage(refundableDeposit)
+            )
+        );
+        address recoveredAddress = ecrecover(hashedRefundableDeposit, v, r, s);
+        require(
+            recoveredAddress == refundableDeposit.invitee,
+            "The 'invitee' address must sign the RefundableDeposit message"
+        );
+        // we want to mark the event+invitee hash as executed: refundableDepositExecutedOrVoided[hash] = true
+        bytes32 inviteeEventIdHash = keccak256(
+            abi.encodePacked(
+                refundableDeposit.invitee,
+                refundableDeposit.eventId
+            )
+        );
+        refundableDepositExecuted[inviteeEventIdHash] = true;
+
+        // we want to transfer the refundableDeposit.amount from refundableDeposit.invitee to refundableDeposit.creator
+        bool depositTransferred = usdc.transferFrom(
+            refundableDeposit.invitee,
+            refundableDeposit.creator,
+            refundableDeposit.iouDepositAmount
+        );
+        require(depositTransferred, "Transfer of refundable deposit failed");
+        // emit events
+        emit RefundableDepositTransferred(
+            refundableDeposit.eventId,
+            refundableDeposit.creator,
+            refundableDeposit.invitee,
+            refundableDeposit.iouDepositAmount
+        );
     }
 
     fallback() external payable {
-        revert("Contract does not accept Ether");
+        revert("Does not accept Ether");
     }
 
     receive() external payable {
-        revert("Contract does not accept Ether");
+        revert("Does not accept Ether");
     }
 
-    event SignatureVerified(
+    event AllowanceFeeTransferred(
+        address indexed from,
+        string indexed eventId,
+        uint256 allowanceFee
+    );
+    event InviteeFundsTransferred(
+        string indexed eventId,
         address indexed from,
         address indexed to,
-        uint256 amount,
-        string eventId
+        uint256 optInAmount,
+        uint256 tippingPointFee
     );
-    event TransactionExecuted(
-        address indexed from,
-        address indexed to,
-        uint256 amount,
-        string eventId,
-        bool success
+    event RefundEventFundsTransferred(
+        string indexed eventId,
+        address indexed creator,
+        uint256 totalRefunded,
+        uint256 numOfPplRefunded
     );
-    event ErrorOccurred(address from, string eventId, string message);
+    event RefundableDepositTransferred(
+        string indexed eventId,
+        address indexed creator,
+        address invitee,
+        uint256 iouDepositAmount
+    );
 }
-
-/**
- * The contract should do 2 things:
- * 1. allow invitees to sign/approve transactions for destinations and
- *
- * Do we need to maintain a mapping in storage? Possibly not. My initial thoughts
- * were to keep a mappping of the allowed transfers and transactions but thats storage
- *
- * Maybe we could just verify the signature and then transfer the money but that leaves open
- * the chance for accidental replays if we have a big allowance and replay the same transaction.
- * The contract should guard against our possible folly.
- * So for that reason we can either save the actual transactions {to;from;amount;nonce}.
- * Dang, if we only keep track of a nonce, then that means if an invitee has multiple destination-transactions
- * then we have to execute them in sequential order in order to check the nonce properly
- * We could keep a mapping of hashes of pending transfers and mark them with a boolean
- * addresss => {randDestinationHash: transfered }[]
- * 0x23b3bNickr4rj : { //invitee addresss
- *      0xabcbcb33333: false,  // rand hashes for events (maybe hash the transaction data{to;from;amount;nonce})
- *      0xa278363876328: true,
- *       0xa278363876df328: true,
- *       0xn23423443433: false,
- * }
- * 2. Allow tipping point to actually transfer the usdc from invitee to creator/destination if approved
- *
- *
- *
- *
- * The question remains: do it in 2 steps or 1?
- * If were only going to transfer when the event tips, then why update the contract with a mapping of all the
- * transaction info? Why not just have a check against the transaction info and then transfer if authorized?
- * In order to avoid accidental replays we'll again keep track of authorizations already signed and executed after
- * the fact. The key can be a hash we create, what should it consist of?
- *  rand hash? No we should probably hash info pertaining to the transaction. But if there's two transactions that are
- * the same that will lead to a collision, a transaction is {to;from; amount}.
- * So it needs some sort of nonce. Should the nonce be a counter we keep track of in the contract a global nonce,
- * or a nonce pertaining to each invitee?
- *
- * Update: Better option is Signature Tracking - of (senderAddr + eventName)
- * actually, if we just hash (senderAddr + event) then we can only do transfers once per sender+event, but we need
- * to ensure its the proper amount on the transaction signed else we risk sending an incorrent amount only once.
- * So, nonce is too tricky. If we hash (senderAddr + eventName + amount + receiverAddr) then  the sender could send us
- * multiple signed transactions for 1 event and we could end up executing them all, which i dont think we want - easier
- * to just have 1 transfer per invitee -> Event-creator
- *
- *
- * Potential attack vector: have invitee sign nonsense transfer authorizations for nonsense event-id's
- */
-
-pragma solidity ^0.8.0;
 
 interface IERC20 {
     // Returns the amount of tokens owned by `account`.
