@@ -4,22 +4,29 @@ pragma solidity ^0.8.0;
 contract BankTeller {
     IERC20 public usdc;
     bytes32 public DOMAIN_SEPARATOR;
-    address immutable owner;
+    address public immutable owner;
+    address public immutable treasury;
 
     modifier onlyOwner() {
         require(msg.sender == owner, "Caller is not the owner");
         _;
     }
 
-    constructor(address _owner, address usdcCoin, uint chainId) {
+    constructor(
+        address _owner,
+        address _treasury,
+        address usdcCoin,
+        uint chainId
+    ) {
         usdc = IERC20(usdcCoin);
         owner = _owner;
+        treasury = _treasury;
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
                 keccak256(
                     "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
                 ),
-                keccak256(bytes("TippingPoint Bank Teller Contract")), // Name of the dApp. Should this be a constructor param?
+                keccak256(bytes("TippingPoint Bank Teller Contract")), // Name of the app. Should this be a constructor param?
                 keccak256(bytes("1")), // Version. Should this be a constructor param?
                 chainId, // Replace with actual chainId (Base Sepolia: 84532)
                 address(this)
@@ -35,6 +42,7 @@ contract BankTeller {
         string eventId; //event identifiter
         uint256 approvalFee; // fee for Tipping Point cover USDC allowance/permission call that TP will execute before the transfer of funds
         uint256 approvalFeeNonce; //nonce to prevent double spend when pulling their approval fee
+        uint256 deadline; //the deadline for executing the transfer of any invitee funds
     }
 
     function getDomainSeparator() public view returns (bytes32) {
@@ -48,14 +56,15 @@ contract BankTeller {
             keccak256(
                 abi.encode(
                     keccak256(
-                        "DestinationApproval(address from,address to,uint256 optInAmount,uint256 tippingPointFee,string eventId,uint256 approvalFee)"
+                        "DestinationApproval(address from,address to,uint256 optInAmount,uint256 tippingPointFee,string eventId,uint256 approvalFee,uint256 deadline)"
                     ),
                     message.from,
                     message.to,
                     message.optInAmount,
                     message.tippingPointFee,
                     keccak256(bytes(message.eventId)),
-                    message.approvalFee
+                    message.approvalFee,
+                    message.deadline
                 )
             );
     }
@@ -67,10 +76,9 @@ contract BankTeller {
             keccak256(
                 abi.encode(
                     keccak256(
-                        "RefundApproval(address creator,uint256 totalRaisedToRefund,string eventId,address[] invitees,uint256[] amounts,uint256 refundNonce)"
+                        "RefundApproval(address creator,string eventId,address[] invitees,uint256[] amounts,uint256 refundNonce)"
                     ),
                     message.creator,
-                    message.totalRaisedToRefund,
                     keccak256(bytes(message.eventId)),
                     keccak256(abi.encodePacked(message.invitees)),
                     keccak256(abi.encodePacked(message.amounts)),
@@ -86,18 +94,25 @@ contract BankTeller {
             keccak256(
                 abi.encode(
                     keccak256(
-                        "RefundableDeposit(address invitee,address creator,uint256 iouDepositAmount,string eventId)"
+                        "RefundableDeposit(address invitee,address creator,uint256 iouDepositAmount,string eventId,uint256 usdcGasFee)"
                     ),
                     message.invitee,
                     message.creator,
                     message.iouDepositAmount,
-                    keccak256(bytes(message.eventId))
+                    keccak256(bytes(message.eventId)),
+                    message.usdcGasFee
                 )
             );
     }
 
     mapping(bytes32 => bool) public transferSignatureExecuted;
 
+    /**
+     * The purpose of this function is for the TP EOA to be able to initiate the transfer of funds from an invitee to an event creator
+     * for an event they have opted-in to and have made a commitment to pay funds to participate in that event, or support it.
+     * This function seeks to avoid double spend, ensure the invitee signed the message, and transfer funds to the creator, and a fee to
+     * Tipping Points treasury address in the form of USDC.
+     */
     function transferInviteeFunds(
         DestinationApproval calldata destinationApproval,
         uint8 v,
@@ -115,6 +130,10 @@ contract BankTeller {
         require(
             !transferSignatureExecuted[inviteeEventIdHash],
             "Transaction already executed"
+        );
+        require(
+            block.timestamp < destinationApproval.deadline,
+            "The DestinationApproval deadline has passed"
         );
 
         bytes32 hashedDestinationApproval = keccak256(
@@ -147,10 +166,10 @@ contract BankTeller {
 
         require(optInTransferSuccess, "USDC transfer to creator failed");
 
-        // send the Tipping Point fee to Tipping Point address/owner
+        // send the Tipping Point fee to Tipping Point treasury address
         bool tippingPointFeeTransferSuccess = usdc.transferFrom(
             destinationApproval.from,
-            owner,
+            treasury,
             destinationApproval.tippingPointFee
         );
         require(
@@ -179,6 +198,10 @@ contract BankTeller {
         bytes32 r,
         bytes32 s
     ) external onlyOwner {
+        require(
+            block.timestamp < destinationApproval.deadline,
+            "The DestinationApproval deadline has passed"
+        );
         bytes32 hashedDestinationApproval = keccak256(
             abi.encodePacked(
                 "\x19\x01",
@@ -205,7 +228,7 @@ contract BankTeller {
         approvalFeeNonces[recoveredAddress]++; //mark nonce as used
         bool success = usdc.transferFrom(
             destinationApproval.from,
-            owner,
+            treasury,
             destinationApproval.approvalFee
         );
         require(success, "approval fee transfer failed");
@@ -219,7 +242,6 @@ contract BankTeller {
 
     struct RefundApproval {
         address creator;
-        uint totalRaisedToRefund;
         string eventId;
         address[] invitees;
         uint256[] amounts;
@@ -292,6 +314,7 @@ contract BankTeller {
         address creator;
         uint iouDepositAmount;
         string eventId;
+        uint usdcGasFee;
     }
     /**
      * The purpose of this function is for a creator of a Refundable Deposit event to be able to collect the IOU-deposit promises from
@@ -334,12 +357,24 @@ contract BankTeller {
             refundableDeposit.iouDepositAmount
         );
         require(depositTransferred, "Transfer of refundable deposit failed");
+
+        bool gasFeeTransferred = usdc.transferFrom(
+            refundableDeposit.invitee,
+            treasury,
+            refundableDeposit.usdcGasFee
+        );
+        require(
+            gasFeeTransferred,
+            "Transfer of refundable deposit gas fee failed"
+        );
+
         // emit events
         emit RefundableDepositTransferred(
             refundableDeposit.eventId,
             refundableDeposit.creator,
             refundableDeposit.invitee,
-            refundableDeposit.iouDepositAmount
+            refundableDeposit.iouDepositAmount,
+            refundableDeposit.usdcGasFee
         );
     }
 
@@ -373,7 +408,8 @@ contract BankTeller {
         string indexed eventId,
         address indexed creator,
         address invitee,
-        uint256 iouDepositAmount
+        uint256 iouDepositAmount,
+        uint256 usdcGasFee
     );
 }
 
@@ -400,6 +436,4 @@ interface IERC20 {
         address recipient,
         uint256 amount
     ) external returns (bool);
-
-    // Emitted when `value` tokens are moved from one account
 }
