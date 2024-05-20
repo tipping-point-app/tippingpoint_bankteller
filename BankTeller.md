@@ -126,4 +126,4 @@ we liberally use eip712 messages that they can read and analyze, and ideally und
 - USDC is the erc20 token we intend on primarily using, but may use other stablecoins in the future, permitting the have the functionality we need such as the permit function extension for erc20 tokens.
 - A theme of this contract is ensuring most of it is only callable by the owner address, which is owned by Tipping Point, as a main level of security
 - We see the BankTeller contract as a safeguard to the users from malicious actors, each other, and from Tipping Point
-- For additional info, a staging environment of Tipping Point is live on https://staging.tippingpoint.app 
+- For a glimpse, a staging environment of Tipping Point is live on https://staging.tippingpoint.app 
