@@ -1,17 +1,17 @@
 [Developer Notes]
 
-=============================================================================================================================
+==================================================================================
 
-- Tipping Point Purpose -
+# Tipping Point Purpose 
 
 The purpose of Tipping Point is to faciliate money collection amongst communities and groups of people using blockchain technologies
 and tokens as an alternative to the existing payment systems. By using these new protocols and functionalities we look to offer
 benefits and automation that was previously gatekept by larger companies and institutions. By working with the nature of blockchain
 technology we hope to provide more trust, via trustlessness, through our service and visibility.
 
-# Consult HowTpWorksCopy.md for an outline of the service and UX we provide.
+- Consult HowTpWorksCopy.md for an outline of the service and UX we provide.
 
-- How we achieve that -
+# How we achieve that 
 
 Tipping Point is not a pure dApp. The idea of using an escrow smart contract and that would hold all invitee funds for an event and distribute
 the funds to the creator of the event when the event tipped was considered but that was not the implemenation we went with.
@@ -96,7 +96,7 @@ we liberally use eip712 messages that they can read and analyze, and ideally und
 
 =============================================================================================================================
 
-- Functions -
+ ****Functions**** 
 - getDomainSeparator()
 - \_hashDestinationApprovalMessage()
 - \_hashRefundApprovalMessage()
@@ -106,20 +106,20 @@ we liberally use eip712 messages that they can read and analyze, and ideally und
 - refundEventFunds()
 - collectRefundableDeposit()
 
-- Events -
+ ****Events**** 
 - AllowanceFeeTransferred
 - InviteeFundsTransferred
 - RefundEventFundsTransferred
 - RefundableDepositTransferred
 
-- Mappings -
+ ****Mappings**** 
 - transferSignatureExecuted
 - approvalFeeNonces
 - refundNonces
 - refundableDepositExecuted
 
-- Modifiers -
-- # onlyOwner
+ ****Modifiers**** 
+- onlyOwner
 
 **Notes**:
 
