@@ -1,3 +1,12 @@
+
+(05/19/2024) 
+This page is outdated, please refer to `BankTeller.md` for more up to date details:
+
+Refer to these additional files for context:
+- `AboutUs.md`
+- `HowTpWorks.md`
+
+============================================================================================================================================================================
 The General Idea:
   Tipping Point wants to facilitate coordinating money collection for groups of people(for any event or reason they can think of). 
   We want to utilize the Ethereum blockchain and the tokens/currencies currently available, right now the focus is on the USDC ERC20 token.
