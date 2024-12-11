@@ -6,6 +6,7 @@ Refer to these additional files for context:
 - `AboutUs.md`
 - `HowTpWorks.md`
 
+
 ============================================================================================================================================================================
 The General Idea:
   Tipping Point wants to facilitate coordinating money collection for groups of people(for any event or reason they can think of). 
