@@ -1,129 +1,327 @@
-[Developer Notes]
+[Developer Notes] Updated as of 11/7/2025
 
 ==================================================================================
 
-# Tipping Point Purpose 
+What is Tipping Point?
 
-The purpose of Tipping Point is to faciliate money collection amongst communities and groups of people using blockchain technologies
-and tokens as an alternative to the existing payment systems. By using these new protocols and functionalities we look to offer
-benefits and automation that was previously gatekept by larger companies and institutions. By working with the nature of blockchain
-technology we hope to provide more trust, via trustlessness, through our service and visibility.
+Tipping Point is a decentralized crowdfunding platform that lets users collect money without a middleman taking custody. Contributors pledge in stablecoins (USDC by default), but funds don't move unless a campaign’s success condition is met (e.g., enough people joined, or the financial goal was reached). When a campaign “tips” (succeeds), funds move peer-to-peer from each contributor’s wallet to the creator’s wallet, with a small platform fee routed to the Tipping Point treasury. If the campaign fails, no money moves and no fees are charged.
 
-- Consult HowTpWorksCopy.md for an outline of the service and UX we provide.
+Campaign Types:
 
-# How we achieve that 
+Split Single Amount – One total cost split equally and dynamically among all contributors at tip time. As more users join, the price per person goes down.
 
-Tipping Point is not a pure dApp. The idea of using an escrow smart contract and that would hold all invitee funds for an event and distribute
-the funds to the creator of the event when the event tipped was considered but that was not the implemenation we went with.
-A pure decentralized app had it merits but we like the idea of extendability of features by keeping certains aspects of the codebase on the
-web2 side. What we did decide to keep on the blockchain is what we consider the lynchpin that will give our users trust and visibility into
-Tipping Point, and what is the bridge from Tipping Point into the blockchain side of things.
+Fixed Amount Per Person – Everyone pledges the same fixed amount (like a ticket).
 
-Enter the BankTeller smart contract. The status of Tipping Point events, such as the number of invitees that have opted in, the amounts of $
-they have promised to contribute, the details of the event, the deadlines, etc., are all maintained and monitored on the web2 side. However,
-when an event actually tips and its time to distribute money, that is where the web3 and Bank Teller step in to facilitate distribution.
+Goal-Based Fundraising – An all-or-nothing fundraiser. Users can pledge any amount, but funds are only sent if the goal is met by the deadline.
 
-In order for an invitee to opt in to an event, they must accomplish 2 things:
+Flexible Fundraising – Tipping Point's one campaign without any goals or minimums. Campaign creators collect regardless of goal attainment (creator receives whatever is raised).
 
-- Give the BankTeller smart contract an allowance over their USDC funds by offchain signing an eip712 'permit' message that a Tipping Point EOA will
-  execute to the USDC smart contract for them
-- Offchain sign a different eip712 message with the details of their contribution promise. Some of those details include the event-id, the ethAddress of the
-  creator of the event, the ethAddress of the invitee, and the contribution amount. This is so the invitee can review and sign off on what they are committing
-  to contribute in USDC if the event "Tips", i.e. is successful. This offchain signature data is called the DestinationApproval.
+Tipping Point aims to feel like a simple checkout while preserving web3 guarantees: non-custodial transfers, on-chain verifiability, and explicit user approvals.
 
-Once they have submitted those 2 signatures, the invitee can sit back and wait for the event to tip or not tip by its deadline.
+How It Works (high level, non-technical):
 
-Now based on the event type (HeadCount, Make or Break, etc) it will tip(succeed) or not tip(not succeed) based on whether enough invitees have opted in, or if
-its raised enough money by the deadline. If it has not tipped, then no funds are ever transferred. However, if an event tips, a few things happen:
+Tipping Point is a hybrid system:
 
-- A Tipping Point EOA (marked as the "owner" address in the BankTeller smart contract) will find each invitee that opted in to the event
-  and will call the BankTeller's external `transferInviteeFunds()` function, and pass in the invitees signature of the DestinationApproval message.
-  The BankTeller smart contract will, using data from the DestinationApproval message, then confirm it was signed by the `from` address, a.k.a
-  the invitee. It will transfer the authorized/signed `optInAmount` from the invitee to the the `to` address, a.k.a the creator, and it will transfer
-  a small USDC amount called `tippingPointFee` from the `DestinationApproval` and send that to the Tipping Point `treasury` address - this fee is the
-  small fee Tipping Point charges for coordinating this transfer; we currently plan to make it 1.5% of the event's goal amount split among invitees.
-  This function also attempts to prevent double-spend of invitees funds to the creator by tracking a hash of the invitee address + the event id in
-  a mapping called `transferSignatureExecuted`, that way we do not accidentally transfer funds multiple times. This function will be called for
-  every invitee that has opted in, given the bank teller a USDC allowance, and signed their `DestinationApproval` message.
+Off-chain (the app): Campaign creation, status tracking (who opted in, how much, deadlines), and tip/fail decisioning.
 
-So, you see that the BankTeller smart contract literally acts as a Bank Teller by checking this IOU type message for a signature that authorizes
-the transfer of funds from person A to person B. The Bank Teller is ideally programmed in a way to protect the invitee from malicious actors,
-from bugs, incompetence, and even Tipping Point when they decide to opt in and sign this IOU to a creator's event. And only the Tipping Point EOA
-is capable of initating this call to the Bank Teller, another line of defense, but again the Bank Teller should protect the invitee's funds
-from Tipping Point itself. Currently, worst case scenario is Tipping Point sends the invitee funds to the creator prematurely or when an event
-has failed, which would benefit the creator who the invitee had planned to pay anyways, and if this occurs likely hurts Tipping Point's reputation
-and causes users to no longer trust Tipping Point, and does not benefit Tipping Point - this responsibility/risk is one we take on in the web2
-side of logic, and have tried to mitigate how we could benefit from. We plan to make explicit that invitees should opt in and verify the
-addresses for creators of events they plan to send money to.
+On-chain (the contract): When a campaign tips, the BankTeller contract executes the actual USDC transfers from each contributor to the creator and sends a small fee to the Tipping Point treasury. It also supports fee collection for gas abstraction and post-tip refunds initiated by the creator. A future feature supports refundable RSVP-style deposits.
 
-Another external function available only to the Tipping Point `owner` EOA is the `withdrawAllowanceFee()` function. This function will be used to collect
-compensation from users in the form of USDC transferred to the Tipping Point `treasury` address. This is in exchange for TP executing the `permit()`
-function on the USDC contract that gave the BankTeller an allowance to transfer invitee funds(thus spending eth for gas). This function will use the same `DestinationApproval`
-message that invitees signed when opting in to an event. This is so that users have less messages to sign and to make their UX easier,
-rather than have them read and sign multiple eip712 messages, the `DestinationApproval` message combines opting in to an event and approving
-the usdc allowance compensation. The `DestinationApproval` will be signed, verified, and the field of significance is the
-`destinationApproval.approvalFee`. Now a new user who opts into an event can sign one message which will be used by TP dually, once to execute the
-permit function on USDC, and one to transfer their funds when an event tips. This function also keeps track of a mapping of allowance nonces
-called `approvalFeeNonces`. This is to prevent double-spend/collection of a users allowance fee by Tipping Point. Another benefit of the nonce,
-is if a user runs out of an allowance or revokes an allowance, they can sign a new `DestinationApproval` message, and we can collect a new
-`destinationApproval.approvalFee` thanks to the newly signed message which will have a new nonce.
+Contributor Experience
 
-**Note**: The reason for USDC compensation is Tipping Point looks to onboard new users to crypto so that they do not require eth to opt in and use the app.
-We believe by making users only hold and thus use USDC, we can simplify the UX flow and experience without introducing the complication of gas fees,
-other volatile currencies, executing transactions, etc. This is our way of abstracting away aspects of web3 from users in hopes of simplicity.
+The contributor signs two EIP-712 messages off-chain:
 
-Next, we have the `refundEventFunds()` which unlike the other functions is external, called by the creator, and thus needs the creatot to hold eth
-for the gas fees, unfortunately. We decided on this implemenation because it was simpler to have the creator cover the eth gasFees themselves,
-rather than try to calculate appropriate eth-gasFee compensation and collect USDC compensation. Now the purpose and function of `refundEventFunds()`:
-If for some reason an event tips, the invitee funds are distributed to the creator, and the creator decides to return the funds for possibly a
-last minute cancelation, or some other reason, then this function allows TP to aggregate the list of invitee addresses that opted in + their
-contributions, and present them to the Creator to sign off on via an eip712 message. Then the signed message, `RefundApproval` is submitted to
-`refundEventFunds()` to iterated through the invitees array, and return their contribution. We check that the msg.sender is the creator so they
-call this method directly, and we check the messages creator address it matches the signing address. We then iterate and return the USDC funds.
-We use a nonce value to ensure the creator can not submit the same signed `RefundApproval` message and incidentally double-refund to the invitees.
+A USDC Permit (EIP-2612-style) so BankTeller can transfer USDC from the contributor without the contributor needing ETH for gas.
 
-The final function is an external function we hope to release in the future for a separate isolated event type situation, separate from events that can tip.
-We plan to use this for function has RSVPs for events that will penalize invitees who do not show up to an event.
-The idea is an invitee signs an eip712 message in the form of `RefundableDeposit`. The scenario is for event creators who want to plan an event and want to
-ensure that people that commit to attend the event will show up and not flake, otherwise if they do then they will be penalized an amount for flaking via the execution
-of the `RefundableDeposit` message, so it functions more like an RSVP than a deposit because the intention is for money not to transfer unless the creator tells
-TP to execute the `RefundableDeposit` on certain invitees that did not show up to the event. The `RefundableDeposit` message will be verified for a signature,
-it will transfer the `refundableDeposit.iouDepositAmount` to the creator from the invitee, and will pay `refundableDeposit.usdcGasFee` to TP as compensation
-for paying the eth gas fee to transfer the funds to the creator. There is a `refundableDepositExecuted` mapping to prevent double spend as well.
+A DestinationApproval describing the pledge: campaignId, contributor address, creator address, pledged amount, platform fee, deadline, and a fee-collection nonce.
 
-**Note**: We extensively use eip712 message because we want users to be aware and to confirm what funds they may potentially send, and to whom. So,
-we liberally use eip712 messages that they can read and analyze, and ideally understand.
+The app stores these signatures. If the campaign tips before the deadline, the Tipping Point EOA (platform operator address) calls BankTeller to execute the transfers using the contributor’s signed intent.
 
-=============================================================================================================================
+Why hybrid?
 
- ****Functions**** 
-- getDomainSeparator()
-- \_hashDestinationApprovalMessage()
-- \_hashRefundApprovalMessage()
-- \_hashRefundableDepositMessage()
-- transferInviteeFunds()
-- withdrawAllowanceFee()
-- refundEventFunds()
-- collectRefundableDeposit()
+Keeping orchestration off-chain (what tipped, who joined) lets us iterate quickly and deliver a streamlined UX. Putting the value-movement step on-chain provides transparency, replay protection, and safety rails for contributors.
 
- ****Events**** 
-- AllowanceFeeTransferred
-- InviteeFundsTransferred
-- RefundEventFundsTransferred
-- RefundableDepositTransferred
+Terminology note: The Solidity code uses some legacy names for historical reasons (e.g., “eventId”, “invitee”). In the app and in this doc we say campaign and contributor. Where relevant, we call out the legacy field names explicitly.
 
- ****Mappings**** 
-- transferSignatureExecuted
-- approvalFeeNonces
-- refundNonces
-- refundableDepositExecuted
+The BankTeller Contract (technical deep dive):
 
- ****Modifiers**** 
-- onlyOwner
+Roles & addresses
 
-**Notes**:
+owner (EOA): Tipping Point operator address; only this address can initiate most transfers (access-controlled by onlyOwner).
 
-- USDC is the erc20 token we intend on primarily using, but may use other stablecoins in the future, permitting the have the functionality we need such as the permit function extension for erc20 tokens.
-- A theme of this contract is ensuring most of it is only callable by the owner address, which is owned by Tipping Point, as a main level of security
-- We see the BankTeller contract as a safeguard to the users from malicious actors, each other, and from Tipping Point
-- For a glimpse, a staging environment of Tipping Point is live on https://staging.tippingpoint.app 
+treasury: Receives platform fees.
+
+usdc (IERC20): Primary settlement token. Assumed to support permit (EIP-2612-style) for gasless approvals.
+
+EIP-712 domain & typed data:
+
+BankTeller uses a canonical EIP-712 domain (DOMAIN_SEPARATOR) and three typed messages:
+
+DestinationApproval (signed by the contributor; legacy field names shown):
+
+from (contributor)
+
+to (creator)
+
+optInAmount (pledge amount)
+
+tippingPointFee (platform fee for this pledge)
+
+eventId (campaignId in the app)
+
+approvalFee (USDC fee compensating Tipping Point for calling permit on USDC)
+
+approvalFeeNonce (prevents duplicate fee withdrawals)
+
+deadline (no transfers after this)
+
+RefundApproval (signed by the creator):
+
+creator
+
+eventId (campaignId)
+
+invitees (array of contributor addresses)
+
+amounts (array of refund amounts matching invitees)
+
+refundNonce (prevents duplicate/reflex refunds)
+
+RefundableDeposit (signed by the contributor; future/optional RSVP flow):
+
+invitee (contributor)
+
+creator
+
+iouDepositAmount (deposit at risk if no-show)
+
+eventId (campaignId)
+
+usdcGasFee (USDC fee to compensate gas abstraction)
+
+(implicitly covered by EIP-712 domain; also guarded by a replay-prevention mapping)
+
+Storage structures (safety rails):
+
+transferSignatureExecuted[bytes32] — prevents re-using the same contributor+campaign DestinationApproval for multiple transfers.
+
+approvalFeeNonces[address] — tracks latest consumed approval-fee nonce per contributor.
+
+refundNonces[address] — tracks latest consumed refund nonce per creator.
+
+refundableDepositExecuted[bytes32] — prevents collecting the same refundable deposit twice.
+
+Happy-path flows:
+
+A) Tipping & collection
+
+The app determines that a campaign tipped (per its type and rules).
+
+For each opted-in contributor, the owner EOA calls:
+
+transferInviteeFunds(destinationApproval, v, r, s)
+
+BankTeller:
+
+Verifies the EIP-712 signature matches destinationApproval.from.
+
+Enforces block.timestamp < destinationApproval.deadline.
+
+Computes a unique key from (from, eventId) and checks transferSignatureExecuted to prevent double-spend.
+
+Pulls optInAmount USDC from the contributor and sends it to to (the creator), then routes tippingPointFee to treasury.
+
+Emits InviteeFundsTransferred(eventId, from, to, optInAmount, tippingPointFee).
+
+Marks the (from, eventId) transfer as executed.
+
+Fee model: the tippingPointFee is configurable and can represent a small percentage of the campaign economics (e.g., split proportionally across contributors). Exact configuration is enforced off-chain and memorialized in each contributor’s signed DestinationApproval.
+
+B) Gas abstraction fee (permit compensation)
+
+To let contributors interact without holding ETH, Tipping Point pays gas to execute their USDC permit. The platform then collects a small USDC allowance fee (per contributor) that the contributor agreed to inside DestinationApproval.
+
+The owner EOA calls:
+
+withdrawAllowanceFee(destinationApproval, v, r, s)
+
+BankTeller:
+
+Verifies signature and deadline.
+
+Enforces approvalFeeNonces[from] == destinationApproval.approvalFeeNonce (no double charging).
+
+Transfers approvalFee USDC from contributor to treasury.
+
+Increments approvalFeeNonces[from].
+
+Emits AllowanceFeeTransferred(from, eventId, approvalFee).
+
+This call can happen before or after executing the USDC permit. Bundling the consent keeps UX to a single signature.
+
+C) Post-tip refunds (creator-initiated)
+
+If the creator decides to return funds after a successful collection (e.g., cancellation), the creator (not the platform) triggers refunds and pays the gas:
+
+The creator calls:
+
+refundEventFunds(refundApproval, v, r, s) (note: not onlyOwner)
+
+BankTeller:
+
+Requires msg.sender == refundApproval.creator.
+
+Enforces refundNonces[creator] == refundApproval.refundNonce, then increments it.
+
+Verifies the EIP-712 signature.
+
+Iterates over invitees/amounts and transfers USDC from creator back to each contributor.
+
+Emits RefundEventFundsTransferred(eventId, creator, invitee, amount) for each refund.
+
+D) Refundable RSVP deposits (future / not yet implemented)
+
+For RSVP-style campaigns where no-shows are penalized:
+
+The owner EOA calls:
+
+collectRefundableDeposit(refundableDeposit, v, r, s)
+
+BankTeller:
+
+Verifies the contributor’s EIP-712 signature.
+
+Checks refundableDepositExecuted[key] (derived from contributor and eventId).
+
+Transfers iouDepositAmount from contributor to creator and routes usdcGasFee to treasury.
+
+Emits RefundableDepositTransferred(eventId, creator, invitee, iouDepositAmount, usdcGasFee) and marks executed.
+
+Function Reference:
+
+Naming: Functions use legacy “invitee/eventId” parameter names; read them as contributor/campaignId.
+
+getDomainSeparator() → bytes32
+
+Returns the EIP-712 domain separator used for all typed-data signatures.
+
+Internal hash helpers
+
+_hashDestinationApprovalMessage(DestinationApproval) → bytes32
+
+_hashRefundApprovalMessage(RefundApproval) → bytes32
+
+_hashRefundableDepositMessage(RefundableDeposit) → bytes32
+
+These compute the EIP-712 struct hashes used during signature verification.
+
+transferInviteeFunds(DestinationApproval, v, r, s) onlyOwner
+
+Executes a contributor’s pledge at tip time.
+
+Verifies: valid EIP-712 signature by from; not past deadline; not already executed for (from,eventId).
+
+Transfers: optInAmount to to (creator) and tippingPointFee to treasury.
+
+Emits: InviteeFundsTransferred.
+
+Guards: transferSignatureExecuted.
+
+withdrawAllowanceFee(DestinationApproval, v, r, s) onlyOwner
+
+Collects the USDC fee that compensates the platform for gas spent executing the contributor’s permit.
+
+Verifies: valid signature; not past deadline; approvalFeeNonce matches.
+
+Transfers: approvalFee to treasury.
+
+Emits: AllowanceFeeTransferred.
+
+Guards: approvalFeeNonces[from] (incremented after success).
+
+refundEventFunds(RefundApproval, v, r, s) creator-only
+
+Returns collected funds from creator back to contributors.
+
+Requires: msg.sender == creator.
+
+Verifies: valid signature; refundNonce matches, then increments.
+
+Transfers: USDC from creator to each listed contributor.
+
+Emits: RefundEventFundsTransferred per recipient.
+
+Guards: refundNonces[creator].
+
+collectRefundableDeposit(RefundableDeposit, v, r, s) onlyOwner
+
+Collects contributor deposits for RSVP-style campaigns when conditions are met (e.g., marked as no-show).
+
+Verifies: contributor signature; not previously executed for (invitee,eventId).
+
+Transfers: iouDepositAmount to creator; usdcGasFee to treasury.
+
+Emits: RefundableDepositTransferred.
+
+Guards: refundableDepositExecuted.
+
+Events:
+
+AllowanceFeeTransferred(address from, string eventId, uint256 allowanceFee)
+
+InviteeFundsTransferred(string eventId, address from, address to, uint256 optInAmount, uint256 tippingPointFee)
+
+RefundEventFundsTransferred(string eventId, address creator, address invitee, uint256 amount) (fields abbreviated here for readability)
+
+RefundableDepositTransferred(string eventId, address creator, address invitee, uint256 iouDepositAmount, uint256 usdcGasFee)
+
+(Event names retain legacy “eventId/invitee” wording for backward compatibility.)
+
+Access Control & Safety Summary:
+
+onlyOwner on all value-moving functions except refunds (which are creator-only).
+
+Replay protection via:
+
+transferSignatureExecuted[(from,eventId)]
+
+approvalFeeNonces[from]
+
+refundNonces[creator]
+
+refundableDepositExecuted[(invitee,eventId)]
+
+Explicit deadlines on contributor approvals to bound risk.
+
+Non-custodial design: Funds move directly from → creator or back creator → contributor; Tipping Point never holds user balances.
+
+Token Notes:
+
+USDC is the default ERC-20 used today. Other stablecoins may be supported if they expose the necessary permit/typed-approval flow and standard ERC-20 semantics.
+
+Operational Notes:
+
+The platform coordinates when to call the contract (e.g., which contributors tipped, the final amount for Split Single Amount, etc.). Those decisions are made off-chain, memorialized in user signatures, and then enforced on-chain by BankTeller at transfer time.
+
+Mis-use by the platform (e.g., premature transfer) would not benefit Tipping Point economically and would be visible on-chain; the contract still enforces signatures, deadlines, and replay guards to limit blast radius.
+
+Creators pay gas only for refunds; contributors can be gasless via permit + approvalFee.
+
+Legacy → Current Terminology Map:
+
+event / eventId → campaign / campaignId
+
+invitee → contributor
+
+Headcount → Fixed Amount Per Person
+
+Sliding Scale → Split Single Amount
+
+Appendix: Typical call sequence (tip)
+
+Contributor signs permit (USDC) and DestinationApproval.
+
+Campaign tips off-chain.
+
+Owner calls withdrawAllowanceFee (optional ordering) and transferInviteeFunds for each contributor.
+
+BankTeller verifies signatures, deadlines, nonces; transfers USDC to creator and fee to treasury; emits events.
